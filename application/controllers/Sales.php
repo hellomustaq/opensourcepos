@@ -583,6 +583,28 @@ class Sales extends Secure_Controller
 
 		$data['print_price_info'] = TRUE;
 
+		$stats['subtotal'] = $totals['subtotal'];
+		$stats['sales_total'] = $totals['total'];
+		$stats['payment_received'] = $totals['payment_total'];
+		$stats['item_count'] = $totals['item_count'];
+		$stats['total_units'] = $totals['total_units'];
+		$stats['prediscount_subtotal'] = $totals['prediscount_subtotal'];
+		$stats['total_discount'] = $totals['total_discount'];
+		$stats['tax_total'] = $totals['tax_total'];
+		if($data['amount_due'] < 0)
+		{
+			$stats['cash_refund'] = $data['amount_due'] * -1;
+			$stats['balance_due'] = 0;
+			$stats['net_due'] = 0;
+		}
+		else
+		{
+			$stats['cash_refund'] = 0;
+			$stats['balance_due'] = $data['amount_due'];
+			$stats['net_due'] = $data['amount_due'];
+		}
+		$stats['after_sale_payments'] = 0;
+
 		$override_invoice_number = NULL;
 
 		if($this->sale_lib->is_sale_by_receipt_mode() && $invoice_number_enabled )
@@ -645,7 +667,7 @@ class Sales extends Secure_Controller
 				$invoice_view = $this->config->item('invoice_type');
 
 				// Save the data to the sales table
-				$data['sale_id_num'] = $this->Sale->save($sale_id, $data['sale_status'], $data['cart'], $customer_id, $employee_id, $data['comments'], $invoice_number, $work_order_number, $quote_number, $sale_type, $data['payments'], $data['dinner_table'], $tax_details);
+				$data['sale_id_num'] = $this->Sale->save($sale_id, $data['sale_status'], $data['cart'], $customer_id, $employee_id, $data['comments'], $invoice_number, $work_order_number, $quote_number, $sale_type, $data['payments'], $data['dinner_table'], $tax_details, $stats);
 				$data['sale_id'] = 'POS ' . $data['sale_id_num'];
 
 				// Resort and filter cart lines for printing
@@ -694,7 +716,7 @@ class Sales extends Secure_Controller
 				$data['sale_status'] = SUSPENDED;
 				$sale_type = SALE_TYPE_WORK_ORDER;
 
-				$data['sale_id_num'] = $this->Sale->save($sale_id, $data['sale_status'], $data['cart'], $customer_id, $employee_id, $data['comments'], $invoice_number, $work_order_number, $quote_number, $sale_type, $data['payments'], $data['dinner_table'], $tax_details);
+				$data['sale_id_num'] = $this->Sale->save($sale_id, $data['sale_status'], $data['cart'], $customer_id, $employee_id, $data['comments'], $invoice_number, $work_order_number, $quote_number, $sale_type, $data['payments'], $data['dinner_table'], $tax_details, null);
 				$this->sale_lib->set_suspended_id($data['sale_id_num']);
 
 				$data['cart'] = $this->sale_lib->sort_and_filter_cart($data['cart']);
@@ -731,7 +753,7 @@ class Sales extends Secure_Controller
 				$data['sale_status'] = SUSPENDED;
 				$sale_type = SALE_TYPE_QUOTE;
 
-				$data['sale_id_num'] = $this->Sale->save($sale_id, $data['sale_status'], $data['cart'], $customer_id, $employee_id, $data['comments'], $invoice_number, $work_order_number, $quote_number, $sale_type, $data['payments'], $data['dinner_table'], $tax_details);
+				$data['sale_id_num'] = $this->Sale->save($sale_id, $data['sale_status'], $data['cart'], $customer_id, $employee_id, $data['comments'], $invoice_number, $work_order_number, $quote_number, $sale_type, $data['payments'], $data['dinner_table'], $tax_details, null);
 				$this->sale_lib->set_suspended_id($data['sale_id_num']);
 
 				$data['cart'] = $this->sale_lib->sort_and_filter_cart($data['cart']);
@@ -758,7 +780,7 @@ class Sales extends Secure_Controller
 				$sale_type = SALE_TYPE_POS;
 			}
 
-			$data['sale_id_num'] = $this->Sale->save($sale_id, $data['sale_status'], $data['cart'], $customer_id, $employee_id, $data['comments'], $invoice_number, $work_order_number, $quote_number, $sale_type, $data['payments'], $data['dinner_table'], $tax_details);
+			$data['sale_id_num'] = $this->Sale->save($sale_id, $data['sale_status'], $data['cart'], $customer_id, $employee_id, $data['comments'], $invoice_number, $work_order_number, $quote_number, $sale_type, $data['payments'], $data['dinner_table'], $tax_details, $stats);
 
 			$data['sale_id'] = 'POS ' . $data['sale_id_num'];
 
@@ -1167,6 +1189,19 @@ class Sales extends Secure_Controller
 		$data['selected_customer_id'] = $sale_info['customer_id'];
 		$data['sale_info'] = $sale_info;
 
+		$stats_info = $this->Sale->get_stats_info($sale_id);
+		$data['payment_type_new'] = '--';
+		$data['payment_amount_new'] = $stats_info->net_due;
+
+		if($data['payment_amount_new'] != 0)
+		{
+			$data['balance_due'] = TRUE;
+		}
+		else
+		{
+			$data['balance_due'] = FALSE;
+		}
+
 		$data['payments'] = array();
 		foreach($this->Sale->get_sale_payments($sale_id)->result() as $payment)
 		{
@@ -1179,6 +1214,12 @@ class Sales extends Secure_Controller
 
 		// don't allow gift card to be a payment option in a sale transaction edit because it's a complex change
 		$data['payment_options'] = $this->xss_clean($this->Sale->get_payment_options(FALSE));
+
+		// Set up a slightly modified list of payment types for new payment entry
+		$new_payment_options = $this->Sale->get_payment_options(FALSE);
+		$new_payment_options["--"] = $this->lang->line('common_none_selected_text');
+		$data['new_payment_options'] = $this->xss_clean($new_payment_options);
+
 		$this->load->view('sales/form', $data);
 	}
 
@@ -1240,6 +1281,7 @@ class Sales extends Secure_Controller
 	public function save($sale_id = -1)
 	{
 		$newdate = $this->input->post('date');
+		$employee_id = $this->Employee->get_logged_in_employee_info()->person_id;
 
 		$date_formatter = date_create_from_format($this->config->item('dateformat') . ' ' . $this->config->item('timeformat'), $newdate);
 
@@ -1251,39 +1293,28 @@ class Sales extends Secure_Controller
 			'invoice_number' => $this->input->post('invoice_number') != '' ? $this->input->post('invoice_number') : NULL
 		);
 
-		// go through all the payment type input from the form, make sure the form matches the name and iterator number
+		// In order to maintain tradition the only element that can change on prior payments is the payment type
 		$payments = array();
 		$number_of_payments = $this->input->post('number_of_payments');
 		for($i = 0; $i < $number_of_payments; ++$i)
 		{
+			$payment_id = $this->input->post('payment_id_' . $i);
 			$payment_amount = $this->input->post('payment_amount_' . $i);
 			$payment_type = $this->input->post('payment_type_' . $i);
-			// remove any 0 payment if by mistake any was introduced at sale time
-			if($payment_amount != 0)
-			{
-				// search for any payment of the same type that was already added, if that's the case add up the new payment amount
-				$key = FALSE;
-				if(!empty($payments))
-				{
-					// search in the multi array the key of the entry containing the current payment_type
-					// NOTE: in PHP5.5 the array_map could be replaced by an array_column
-					$key = array_search($payment_type, array_map(function ($v)
-					{
-						return $v['payment_type'];
-					}, $payments));
-				}
 
-				// if no previous payment is found add a new one
-				if($key === FALSE)
-				{
-					$payments[] = array('payment_type' => $payment_type, 'payment_amount' => $payment_amount);
-				}
-				else
-				{
-					// add up the new payment amount to an existing payment type
-					$payments[$key]['payment_amount'] += $payment_amount;
-				}
-			}
+			// To maintain tradition we will also delete any payments with 0 amount assuming these are mistakes
+			// introduced at sale time.  This is now done in Sale.php
+
+			$payments[] = array('payment_id' => $payment_id, 'payment_type' => $payment_type, 'payment_amount' => $payment_amount, 'payment_user' => $employee_id);
+		}
+
+		$payment_id = -1;
+		$payment_amount = $this->input->post('payment_amount_new');
+		$payment_type = $this->input->post('payment_type_new');
+
+		if($payment_type != '--' && $payment_amount <> 0)
+		{
+			$payments[] = array('payment_id' => $payment_id, 'payment_type' => $payment_type, 'payment_amount' => $payment_amount, 'payment_user' => $employee_id);
 		}
 
 		if($this->Sale->update($sale_id, $sale_data, $payments))
@@ -1480,7 +1511,7 @@ class Sales extends Secure_Controller
 	{
 		foreach($array as $key => $val)
 		{
-			if ($val['item_id'] === $id)
+			if($val['item_id'] === $id)
 			{
 				return $key;
 			}
